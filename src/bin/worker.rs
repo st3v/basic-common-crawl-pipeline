@@ -12,7 +12,7 @@ use pipeline::{
     rabbitmq::{
         rabbitmq_channel_with_queue, rabbitmq_connection, rabbitmq_consumer, CC_QUEUE_NAME,
     },
-    tracing_and_metrics::{run_metrics_server, setup_tracing},
+    metrics,
     trafilatura,
 };
 use warc::WarcHeader;
@@ -30,8 +30,8 @@ struct Args {
 async fn main() {
     let args = Args::parse();
     
-    setup_tracing();
-    tokio::task::spawn(run_metrics_server(args.metrics_port));
+    pipeline::tracing::setup();
+    tokio::task::spawn(metrics::run_server(args.metrics_port));
 
     let rabbit_conn = rabbitmq_connection().await.unwrap();
     let (channel, _queue) = rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME)

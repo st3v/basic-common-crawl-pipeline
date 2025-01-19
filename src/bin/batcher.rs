@@ -31,7 +31,8 @@ use pipeline::{
     rabbitmq::{
         publish_batch, rabbitmq_channel_with_queue, rabbitmq_connection, BATCH_SIZE, CC_QUEUE_NAME,
     },
-    tracing_and_metrics::{run_metrics_server, setup_tracing},
+    metrics,
+    tracing,
 };
 use std::fs;
 
@@ -53,8 +54,8 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    setup_tracing();
-    tokio::task::spawn(run_metrics_server(9000));
+    tracing::setup();
+    tokio::task::spawn(metrics::run_server(9000));
 
     let rabbit_conn = rabbitmq_connection().await.unwrap();
     let (channel, _queue) = rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME)
@@ -109,7 +110,6 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use pipeline::commoncrawl::{parse_cdx_line, parse_cluster_idx};
-
 
     #[test]
     fn can_parse_cdx_file_with_three_lines() {
