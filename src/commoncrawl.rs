@@ -37,32 +37,39 @@ pub async fn download_and_unzip(
     length: usize,
 ) -> Result<Vec<u8>, anyhow::Error> {
     let client = reqwest::Client::new();
-    let res = client
+    let result = client
         .get(url)
         .header("Range", format!("bytes={}-{}", offset, offset + length - 1))
         .send()
-        .await
-        .unwrap();
-    match res.status() {
-        reqwest::StatusCode::PARTIAL_CONTENT => {
-            let body = res.bytes().await.unwrap();
-            tracing::info!(
-                "Successfully fetched the URL {} from {} to {}",
-                url,
-                offset,
-                offset + length - 1
-            );
-            DOWNLOADED_BYTES_COUNTER.inc_by(body.len() as u64);
-            let mut decoder = flate2::read::GzDecoder::new(&body[..]);
-            let mut buffer = Vec::new();
-            decoder.read_to_end(&mut buffer).unwrap();
-            Ok(buffer)
+        .await;
+
+    match result {
+        Err(e) => {
+            anyhow::bail!(e);
+        },
+        Ok(resp) => {
+            match resp.status() {
+                reqwest::StatusCode::PARTIAL_CONTENT => {
+                    let body = resp.bytes().await.unwrap();
+                    tracing::info!(
+                        "Successfully fetched the URL {} from {} to {}",
+                        url,
+                        offset,
+                        offset + length - 1
+                    );
+                    DOWNLOADED_BYTES_COUNTER.inc_by(body.len() as u64);
+                    let mut decoder = flate2::read::GzDecoder::new(&body[..]);
+                    let mut buffer = Vec::new();
+                    decoder.read_to_end(&mut buffer).unwrap();
+                    Ok(buffer)
+                }
+                _ => Err(anyhow::anyhow!(
+                    "Failed to fetch index file {}: {}",
+                    url,
+                    resp.status()
+                )),
+            }
         }
-        _ => Err(anyhow::anyhow!(
-            "Failed to fetch index file {}: {}",
-            url,
-            res.status()
-        )),
     }
 }
 
