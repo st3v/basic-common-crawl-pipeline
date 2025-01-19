@@ -56,6 +56,9 @@ async fn main() {
                     match res {
                         Ok(data) => {
                             for warc_entry in warc::WarcReader::new(data.as_slice()).iter_records() {
+                                // no filtering yet, i.e. nothing is getting dropped
+                                metrics::count_filtered_doc(false);
+
                                 let warc_entry = warc_entry.unwrap();
                                 if warc_entry.header(WarcHeader::WarcType).unwrap() != "response" {
                                     continue;

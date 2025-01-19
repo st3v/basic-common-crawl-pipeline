@@ -88,8 +88,10 @@ async fn main() {
         .map(parse_cdx_line)
         .filter(|e| {
             if let Some(languages) = e.metadata.languages.as_ref() {
+                metrics::count_filtered_doc(false);
                 languages.contains("eng") && e.metadata.status == 200
             } else {
+                metrics::count_filtered_doc(true);
                 false
             }
         })
