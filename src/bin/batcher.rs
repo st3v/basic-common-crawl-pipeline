@@ -69,7 +69,7 @@ async fn main() {
 
     let mut num_cdx_chunks_processed: usize = 0;
     for cdx_chunk in idx {
-        print!(".");
+        eprint!(".");
         let english_cdx_entries = String::from_utf8(
             download_and_unzip(
                 &format!(
