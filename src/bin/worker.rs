@@ -16,11 +16,22 @@ use pipeline::{
     trafilatura,
 };
 use warc::WarcHeader;
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Specify port for metrics server
+    #[arg(short = 'p', long, default_value_t = 9001)]
+    metrics_port: u16,
+}
 
 #[tokio::main]
 async fn main() {
+    let args = Args::parse();
+    
     setup_tracing();
-    tokio::task::spawn(run_metrics_server(9001));
+    tokio::task::spawn(run_metrics_server(args.metrics_port));
 
     let rabbit_conn = rabbitmq_connection().await.unwrap();
     let (channel, _queue) = rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME)

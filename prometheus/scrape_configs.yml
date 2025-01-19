@@ -12,3 +12,7 @@ scrape_configs:
     static_configs:
       - targets:
           - "host.docker.internal:9001"
+          - "host.docker.internal:9002"
+          - "host.docker.internal:9003"
+          - "host.docker.internal:9004"
+          - "host.docker.internal:9005"
