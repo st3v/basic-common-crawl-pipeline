@@ -138,6 +138,56 @@ export RABBITMQ_CONNECTION_STRING=amqp://localhost:<PORT>
 docker run -d --name prometheus -v ./prometheus:/config -p 9090:9090 prom/prometheus --config.file=/config/scrape_configs.yml
 ```
 
+### Run and configure Minio for local testing
+
+```bash
+mkdir -p /tmp/minio/data
+
+docker run -d \
+   -p 9900:9900 \
+   -p 9901:9901 \
+   --name minio \
+   -v /tmp/minio/data:/data \
+   -e "MINIO_ROOT_USER=ROOTNAME" \
+   -e "MINIO_ROOT_PASSWORD=CHANGEME123" \
+   quay.io/minio/minio server /data --address ":9900" --console-address ":9901"
+
+export MINIO_URL=http://localhost:9900
+```
+
+You can open the Minio console in your browser under http://localhost:9901. Login with the name and password specified in the `docker run` command above.
+
+Inside the console, create a new bucket.  Choose `data` as the name for your new bucket. Altenatively, choose any arbitray name when creating the bucket and subsequently specify `--bucket <name>` when starting the worker.
+
+Either enable anonymous `readwrite` access for the newly created bucket, or create a new access key with an appropriate bucket policy, for example:
+
+```json
+{
+ "ID": "BucketPolicy",
+ "Version": "2012-10-17",
+ "Statement": [
+  {
+   "Sid": "AllAccess",
+   "Effect": "Allow",
+   "Action": [
+    "s3:*"
+   ],
+   "Resource": [
+    "arn:aws:s3:::data",
+    "arn:aws:s3:::data/*"
+   ]
+  }
+ ]
+}
+```
+
+To use the access key, set the `MINIO_ACCESS_KEY_ID` and `MINIO_SECRET_ACCESS_KEY` environment variables prior to starting the worker. E.g.:
+
+```bash
+export MINIO_ACCESS_KEY_ID=<your-key-id>
+export MINIO_SECRET_ACCESS_KEY=<your-secret-key>
+```
+
 ### Download cluster.idx file and start pipeline
 
 First, we download the Common Crawl index file for one crawl:

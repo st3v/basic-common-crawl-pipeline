@@ -4,3 +4,4 @@ pub mod rabbitmq;
 pub mod metrics;
 pub mod tracing;
 pub mod trafilatura;
+pub mod object_store;
