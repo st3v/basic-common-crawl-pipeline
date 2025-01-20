@@ -6,6 +6,8 @@
 //! After extracting the test the worker tokenizes it (for LLM training) and stores the results in an object store.
 //!
 //! In its current implementation it does not refine or filter the extracted text in any way.
+use std::sync::Arc;
+
 use futures_util::StreamExt;
 use lapin::options::BasicAckOptions;
 use pipeline::{
@@ -14,6 +16,7 @@ use pipeline::{
     }, trafilatura, tokenizer::Tokenizer
 };
 use regex::Regex;
+use tokio::sync::Mutex;
 use warc::{BufferedBody, WarcHeader};
 use clap::Parser;
 
@@ -49,7 +52,7 @@ async fn main() {
         .unwrap();
 
     let store = ObjectStore::new(&args.bucket).await;
-    let tokenizer = Tokenizer::new(&args.tokenizer).await.unwrap();
+    let tokenizer = Arc::new(Mutex::new(Tokenizer::new(&args.tokenizer).await.unwrap()));
 
     while let Some(delivery) = consumer.next().await {
         match delivery {
@@ -61,88 +64,27 @@ async fn main() {
                 );
 
                 // collect processed documents
-                let mut processed_docs = Collection::new();
+                let processed_docs = Arc::new(Mutex::new(Collection::new()));
 
-                for entry in batch.unwrap() {
-                    let url = &format!("https://data.commoncrawl.org/{}", entry.metadata.filename);
-                    let res = download_and_unzip(url, entry.metadata.offset, entry.metadata.length).await;
+                // need to synchronize access to trafilatura to prevent deadlocks
+                let trafilatura = Arc::new(Mutex::new(()));
 
-                    match res {
-                        Ok(data) => {
-                            for warc_entry in warc::WarcReader::new(data.as_slice()).iter_records() {
-                                // no filtering yet, i.e. nothing is getting dropped
-                                metrics::doc_filtered(false);
-
-                                let warc_entry = warc_entry.unwrap();
-                                if warc_entry.header(WarcHeader::WarcType).unwrap() != "response" {
-                                    continue;
-                                }
-
-                                tracing::info!(
-                                    "Successfully read WARC entry with URL {}",
-                                    warc_entry.header(WarcHeader::TargetURI).unwrap()
-                                );
-
-                                let raw_content = String::from_utf8_lossy(warc_entry.body());
-                                let html_begin_index = raw_content.find("\n\n");
-                                let Some(html_begin_index) = html_begin_index else {
-                                    tracing::warn!("Failed to find HTML content in WARC entry");
-                                    continue;
-                                };
-
-                                tracing::debug!(
-                                    "First 2000 characters of raw content: {}",
-                                    &raw_content[..2000]
-                                );
-
-                                let opt = match trafilatura::extract(&raw_content[html_begin_index..]) {
-                                    Ok(opt) => { opt },
-                                    Err(e) => {
-                                        tracing::warn!(err.msg = %e, err.details = ?e, "Failed to extract content from WARC entry");
-                                        continue
-                                    }
-                                };
-                                
-                                let content = match opt {
-                                    Some(content) => {
-                                        tracing::info!("Extracted content of length {}", content.len());
-                                        tracing::debug!("Extracted content: {}", &content);
-                                        content
-                                    },
-                                    None => {
-                                        continue
-                                    }
-                                };
-
-                                match tokenizer.encode(content.as_str()).await {
-                                    Ok(tokens) => {
-                                        tracing::info!(
-                                            "Successfully tokenized content: {} tokens",
-                                            tokens.len()
-                                        );
-                                        processed_docs.add(
-                                            warc_entry.id().unwrap(),
-                                            warc_entry.header(WarcHeader::TargetURI).unwrap().to_string(),
-                                            warc_entry.header(WarcHeader::Date).unwrap().to_string(),
-                                            tokens
-                                        )
-                                    },
-                                    Err(e) => {
-                                        tracing::warn!(err.msg = %e, err.details = ?e, "Failed to tokenize content");
-                                        continue;
-                                    }
-                                };
-                            }
-                        },
-                        Err(e) => {
-                            tracing::warn!(err.msg = %e, err.details = ?e, "Failed to download and unzip url {}", url);
-                        }
-                    }
-
+                // process batch entries in parallel
+                let mut tasks = tokio::task::JoinSet::new();
+                for batch_entry in batch.unwrap() {
+                    tasks.spawn(process_batch_entry(
+                        batch_entry,
+                        Arc::clone(&trafilatura),
+                        Arc::clone(&tokenizer),
+                        Arc::clone(&processed_docs)
+                    ));
                 }
 
+                // wait for all tasks to finish
+                tasks.join_all().await;
+
                 // store processed documents
-                let parquet = processed_docs.to_parquet();
+                let parquet = processed_docs.lock().await.to_parquet();
                 // todo: use deterministic IDs for batches
                 let batch_id = uuid::Uuid::new_v4().to_string();
                 // todo: include language folder in path
@@ -154,7 +96,7 @@ async fn main() {
                         delivery.ack(BasicAckOptions::default()).await.unwrap();
                     },
                     Err(e) => {
-                        tracing::warn!(err.msg = %e, err.details = ?e, "Failed to upload parquet file to object store");
+                        tracing::warn!(err.msg = %e, err.details = ?e, "Failed to upload parquet file to object store")
                     }
                 }
             }
@@ -162,6 +104,90 @@ async fn main() {
                 tracing::warn!(err.msg = %e, err.details = ?e, "Failed to receive message from RabbitMQ. Reconnecting.");
                 continue;
             }
+        }
+    }
+}
+
+/// Takes a batch entry and downloads the corresponding WARC records.
+/// For each such record, extracts the text from the HTML content and
+/// tokenizes it. The corrresponding results are collected in a shared
+/// collection from which they can be written to a Parquet file.
+async fn process_batch_entry(entry: CdxEntry, trafilatura: Arc<Mutex<()>>, tokenizer: Arc<Mutex<Tokenizer>>, collection: Arc<Mutex<Collection>>) {
+    let url = &format!("https://data.commoncrawl.org/{}", entry.metadata.filename);
+    let res = download_and_unzip(url, entry.metadata.offset, entry.metadata.length).await;
+
+    match res {
+        Ok(data) => {
+            for warc_entry in warc::WarcReader::new(data.as_slice()).iter_records() {
+                // no filtering yet, i.e. nothing is getting dropped
+                metrics::doc_filtered(false);
+
+                let warc_entry = warc_entry.unwrap();
+                if warc_entry.header(WarcHeader::WarcType).unwrap() != "response" {
+                    continue;
+                }
+
+                tracing::info!(
+                    "Successfully read WARC entry with URL {}",
+                    warc_entry.header(WarcHeader::TargetURI).unwrap()
+                );
+
+                let raw_content = String::from_utf8_lossy(warc_entry.body());
+                let html_begin_index = raw_content.find("\n\n");
+                let Some(html_begin_index) = html_begin_index else {
+                    tracing::warn!("Failed to find HTML content in WARC entry");
+                    continue;
+                };
+
+                tracing::debug!(
+                    "First 2000 characters of raw content: {}",
+                    &raw_content[..2000]
+                );
+
+                let lock = trafilatura.lock().await;
+                let opt = match trafilatura::extract(&raw_content[html_begin_index..]) {
+                    Ok(opt) => { opt },
+                    Err(e) => {
+                        tracing::warn!(err.msg = %e, err.details = ?e, "Failed to extract content from WARC entry");
+                        continue
+                    }
+                };
+                drop(lock);
+
+                let content = match opt {
+                    Some(content) => {
+                        tracing::info!("Extracted content of length {}", content.len());
+                        tracing::debug!("Extracted content: {}", &content);
+                        content
+                    },
+                    None => {
+                        continue
+                    }
+                };
+
+                match tokenizer.lock().await.encode(content.as_str()).await {
+                    Ok(tokens) => {
+                        tracing::info!(
+                            "Successfully tokenized content: {} tokens",
+                            tokens.len()
+                        );
+                        let mut guard = collection.lock().await;
+                        guard.add(
+                            warc_entry.id().unwrap(),
+                            warc_entry.header(WarcHeader::TargetURI).unwrap().to_string(),
+                            warc_entry.header(WarcHeader::Date).unwrap().to_string(),
+                            tokens
+                        );
+                    },
+                    Err(e) => {
+                        tracing::warn!(err.msg = %e, err.details = ?e, "Failed to tokenize content");
+                        continue;
+                    }
+                };
+            }
+        },
+        Err(e) => {
+            tracing::warn!(err.msg = %e, err.details = ?e, "Failed to download and unzip url {}", url);
         }
     }
 }
