@@ -26,7 +26,7 @@ impl ObjectStore {
     }
 
     /// upload to the object store
-    pub async fn upload(&self, key: &str, contents: &[u8]) -> Result<(), anyhow::Error> {
+    pub async fn upload(&self, key: &str, contents: Vec<u8>) -> Result<(), anyhow::Error> {
         let res = self.client.put_object()
             .bucket(self.bucket.clone())
             .key(key)

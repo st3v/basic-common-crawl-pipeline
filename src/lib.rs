@@ -5,3 +5,5 @@ pub mod metrics;
 pub mod tracing;
 pub mod trafilatura;
 pub mod object_store;
+pub mod tokenizer;
+pub mod parquet;
